@@ -3,6 +3,7 @@ import { decide } from '../policy/decision';
 import { validateDraft } from '../ai/validation';
 import { aiOutputSchema, riskForIntent } from '../ai/types';
 import { llm } from '../ai/llm';
+import { buildUserPrompt } from '../ai/prompt';
 
 describe('decision gate', () => {
   const base = {
@@ -92,5 +93,23 @@ describe('mock LLM provider', () => {
       // mock must not invent a rupee figure
       expect(/₹\s?\d/.test(parsed.draft_reply)).toBe(false);
     }
+  });
+
+  it('classifies the actual customer message, not the KB dump it is embedded in', async () => {
+    // Regression test: found by running the full pipeline against a real DB — every
+    // seeded tenant's KB includes an "hours" FAQ (containing "timing"/"open"), which
+    // used to make the mock classifier match 'hours' for almost any message because
+    // it ran regexes over the WHOLE composed prompt instead of just the new message.
+    const kbContext = '- (k1) HOURS: What are your timings? => Open Monday to Saturday, 10 AM to 8 PM.';
+    const user = buildUserPrompt({
+      kbContext,
+      history: '',
+      customerMessage: 'I have a complaint, please call me on 9900011122',
+    });
+    const raw = await llm.generateJson('sys', user);
+    const parsed = aiOutputSchema.parse(JSON.parse(raw));
+    expect(parsed.intent).toBe('complaint');
+    expect(parsed.needs_escalation).toBe(true);
+    expect(parsed.lead_slots.phone).toContain('9900011122');
   });
 });

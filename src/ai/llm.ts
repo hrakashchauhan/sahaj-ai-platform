@@ -27,6 +27,27 @@ class GeminiProvider implements LlmProvider {
 }
 
 /**
+ * Extracts just the customer's new message out of the composed prompt (which also
+ * contains the KB dump + conversation history — see prompt.ts's buildUserPrompt).
+ * The mock classifier below must match against ONLY this, not the whole prompt:
+ * every tenant's KB routinely contains an "hours" FAQ item with words like
+ * "timing"/"open", which would otherwise match the 'hours' pattern first for
+ * almost any message. Falls back to the raw input when the marker is absent
+ * (e.g. a caller/test passing the customer message directly).
+ */
+function extractCustomerMessage(user: string): string {
+  const marker = '=== NEW CUSTOMER MESSAGE ===';
+  const idx = user.indexOf(marker);
+  if (idx === -1) return user;
+  const line = user
+    .slice(idx + marker.length)
+    .split('\n')
+    .map((l) => l.trim())
+    .find((l) => l.length > 0);
+  return line ?? user;
+}
+
+/**
  * Offline heuristic responder so the FULL loop is runnable/testable without a
  * Gemini key. Intentionally conservative: it never fabricates prices and escalates
  * when unsure — matching the grounding contract.
@@ -35,7 +56,7 @@ class MockProvider implements LlmProvider {
   name = 'mock';
 
   async generateJson(_system: string, user: string): Promise<string> {
-    const msg = user.toLowerCase();
+    const msg = extractCustomerMessage(user).toLowerCase();
     let intent = 'other';
     let reply = 'Thanks for your message! Let me check with the team and get back to you shortly. 🙏';
     let confidence = 0.4;
@@ -68,7 +89,9 @@ class MockProvider implements LlmProvider {
       needs_escalation = true;
     }
 
-    const phone = user.match(/(\+?\d[\d\s-]{7,}\d)/);
+    // Match against the isolated customer message too — the full prompt's KB dump
+    // and history can contain unrelated digit sequences (prices, dates, etc.).
+    const phone = extractCustomerMessage(user).match(/(\+?\d[\d\s-]{7,}\d)/);
     return JSON.stringify({
       language: 'hi-IN',
       intent,
