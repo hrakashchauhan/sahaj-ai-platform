@@ -1,0 +1,91 @@
+# Render Blueprint — one-click deploy of the whole stack (API + worker + Postgres + Redis).
+# Deploy: https://render.com/deploy?repo=https://github.com/hrakashchauhan/sahaj-ai-platform
+#
+# After deploy, set the "sync: false" secrets in the Render dashboard (GEMINI_API_KEY,
+# WHATSAPP_*, TELEGRAM_BOT_TOKEN). Without them the app still runs in MOCK mode.
+# The API health check is at /health ; the webhook is /webhooks/whatsapp.
+databases:
+  - name: sahaj-db
+    plan: free
+    postgresMajorVersion: "16"
+
+services:
+  # Redis for BullMQ. noeviction is REQUIRED by BullMQ.
+  - type: keyvalue
+    name: sahaj-redis
+    plan: free
+    maxmemoryPolicy: noeviction
+    ipAllowList: [] # internal only
+
+  - type: web
+    name: sahaj-api
+    runtime: node
+    plan: free
+    buildCommand: npm ci --include=dev && npm run build
+    # DB setup runs in the start command (idempotent) so it works on Render's FREE plan too,
+    # where preDeployCommand is not executed. Only the web service migrates (avoids races).
+    startCommand: npm run db:setup:prod && node dist/main.js
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: DATABASE_URL
+        fromDatabase: { name: sahaj-db, property: connectionString }
+      - key: DATABASE_ADMIN_URL
+        fromDatabase: { name: sahaj-db, property: connectionString }
+      - key: DB_APP_ROLE
+        value: app # tenant txns SET LOCAL ROLE app → RLS enforced on the shared owner connection
+      - key: REDIS_URL
+        fromService: { type: keyvalue, name: sahaj-redis, property: connectionString }
+      - key: META_VERIFY_TOKEN
+        generateValue: true
+      - key: ENCRYPTION_KEY
+        generateValue: true
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: GEMINI_MODEL
+        value: gemini-2.0-flash
+      - key: META_APP_SECRET
+        sync: false
+      - key: WHATSAPP_TOKEN
+        sync: false
+      - key: WHATSAPP_PHONE_NUMBER_ID
+        sync: false
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: PUBLIC_URL
+        sync: false # set to your Render URL, e.g. https://sahaj-api.onrender.com
+      - key: SUPABASE_JWT_SECRET
+        sync: false # required for real dashboard auth; leave unset to keep the dashboard API locked down
+      - key: DASHBOARD_CORS_ORIGIN
+        sync: false # set to your deployed dashboard frontend origin(s), comma-separated
+      # DASHBOARD_DEV_TENANT_ID / DASHBOARD_DEV_USER_ID are intentionally NOT set here —
+      # the dev-mode auth bypass is disabled outright when NODE_ENV=production regardless.
+
+  - type: worker
+    name: sahaj-worker
+    runtime: node
+    plan: free
+    buildCommand: npm ci --include=dev && npm run build
+    startCommand: node dist/worker.js
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: DATABASE_URL
+        fromDatabase: { name: sahaj-db, property: connectionString }
+      - key: DB_APP_ROLE
+        value: app
+      - key: REDIS_URL
+        fromService: { type: keyvalue, name: sahaj-redis, property: connectionString }
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: GEMINI_MODEL
+        value: gemini-2.0-flash
+      - key: WHATSAPP_TOKEN
+        sync: false
+      - key: WHATSAPP_PHONE_NUMBER_ID
+        sync: false
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: ENCRYPTION_KEY
+        sync: false # paste the same value Render generated for sahaj-api
